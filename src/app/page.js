@@ -21,56 +21,47 @@ const App = () => {
   const [cameraPermissionStatus, setCameraPermissionStatus] = useState('unknown'); // 'unknown', 'prompt', 'granted', 'denied'
 
   // Function to load face-api.js models
-  const loadModels = async () => {
+  // Made loadModels a useCallback to stabilize its reference for useEffect dependencies
+  const loadModels = useCallback(async () => {
     try {
-      // Define the path where the models are located.
-      // In a Next.js project, these models would typically be in the `public/models` directory.
       const MODEL_URL = '/models';
 
-      // Ensure window.faceapi is available before attempting to load models.
-      // This is crucial because face-api.js is loaded via a CDN script tag,
-      // making it globally available on the window object.
       if (typeof window.faceapi === 'undefined') {
         console.warn('faceapi is not yet available. Retrying model load...');
-        // Retry loading models after a short delay if faceapi is not ready.
-        setTimeout(loadModels, 500);
+        setTimeout(loadModels, 500); // Recursive call to retry
         return;
       }
 
-      // Load all necessary face-api.js models concurrently.
       await Promise.all([
-        window.faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL), // Lightweight face detector model
-        window.faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL), // Model for detecting 68 facial landmark points
-        window.faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL), // Model for face recognition (often a dependency)
-        window.faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL) // Model for detecting facial expressions
+        window.faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        window.faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        window.faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        window.faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
       ]);
-      setModelsLoaded(true); // Update state to indicate models are successfully loaded.
+      setModelsLoaded(true);
       console.log('Face-API models loaded successfully.');
     } catch (err) {
       console.error('Error loading face-api models:', err);
-      // Set an error message if model loading fails.
       setError('Failed to load face tracking models. Please ensure the /models directory is accessible and contains all necessary files.');
     }
-  };
+  }, []); // Empty dependency array as loadModels itself doesn't depend on external state
 
   // Function to start the webcam stream.
   const startWebcam = useCallback(async () => {
     setError(''); // Clear any previous error messages.
     try {
-      // Request access to the user's video stream using getUserMedia.
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       if (videoRef.current) {
-        videoRef.current.srcObject = stream; // Assign the stream to the video element.
-        videoRef.current.play(); // Start playing the video.
-        setIsCameraReady(true); // Update state to confirm camera is ready.
-        setCameraPermissionStatus('granted'); // Update permission status to 'granted'.
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+        setIsCameraReady(true);
+        setCameraPermissionStatus('granted');
         console.log('Webcam started.');
       }
     } catch (err) {
       console.error('Error accessing webcam:', err);
-      setIsCameraReady(false); // Camera is not ready.
-      setCameraPermissionStatus('denied'); // Update permission status to 'denied'.
-      // Provide specific error messages based on the type of MediaStreamError.
+      setIsCameraReady(false);
+      setCameraPermissionStatus('denied');
       if (err.name === 'NotAllowedError') {
         setError('Camera access denied. Please enable camera permissions in your browser settings.');
       } else if (err.name === 'NotFoundError') {
@@ -85,88 +76,82 @@ const App = () => {
 
   // Effect hook to handle initial setup: loading models and starting webcam.
   useEffect(() => {
-    // Function to check if faceapi is loaded and then proceed.
-    const checkAndLoad = () => {
+    // Only attempt to load models and start webcam if faceapi is available
+    if (typeof window.faceapi !== 'undefined') {
+      loadModels();
+      startWebcam();
+    } else {
+      // If faceapi is not yet available, wait a bit and check again
+      const timeoutId = setTimeout(() => {
         if (typeof window.faceapi !== 'undefined') {
-            loadModels(); // Load face-api models.
-            startWebcam(); // Attempt to start the webcam automatically.
-        } else {
-            // If faceapi is not yet available, wait and re-check.
-            setTimeout(checkAndLoad, 100);
+          loadModels();
+          startWebcam();
         }
-    };
-    checkAndLoad(); // Initiate the check and load process.
+      }, 500); // Give it a bit more time to load from CDN
 
-    // Cleanup function to stop the video stream when the component unmounts.
+      return () => clearTimeout(timeoutId);
+    }
+
+    // Cleanup function to stop the video stream and clear intervals on component unmount
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject;
         const tracks = stream.getTracks();
-        tracks.forEach(track => track.stop()); // Stop all media tracks.
+        tracks.forEach(track => track.stop());
+      }
+      if (videoRef.current && videoRef.current.detectionIntervalId) {
+        clearInterval(videoRef.current.detectionIntervalId);
       }
     };
-  }, [startWebcam]); // Dependency array: startWebcam to ensure effect re-runs if it changes.
+  }, [loadModels, startWebcam]); // Added loadModels and startWebcam to dependencies
 
   // Function to handle face detection and drawing on the canvas.
   const handleVideoPlay = useCallback(async () => {
-    // Exit if essential elements or models/faceapi are not ready.
     if (!videoRef.current || !canvasRef.current || !modelsLoaded || typeof window.faceapi === 'undefined') {
       return;
     }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const context = canvas.getContext('2d'); // Get 2D rendering context
+    const context = canvas.getContext('2d');
 
-    // IMPORTANT: Only proceed if video has valid dimensions
     if (video.videoWidth === 0 || video.videoHeight === 0) {
         console.warn('Video dimensions are 0, retrying face detection after a short delay.');
         setTimeout(handleVideoPlay, 200);
         return;
     }
 
-    // Set canvas dimensions to match video dimensions for accurate drawing.
     const displaySize = { width: video.videoWidth, height: video.videoHeight };
     window.faceapi.matchDimensions(canvas, displaySize);
 
-    // Set up an interval to continuously perform face detection and drawing
     const detectionInterval = setInterval(async () => {
       if (!video.paused && !video.ended) {
-        // Draw the current video frame onto the canvas FIRST
-        // Ensure the video is flipped for mirror effect on canvas too
-        context.clearRect(0, 0, canvas.width, canvas.height); // Clear previous frame
-        context.save(); // Save the current canvas state
-        context.scale(-1, 1); // Flip horizontally
-        context.translate(-canvas.width, 0); // Translate back to draw correctly
-        context.drawImage(video, 0, 0, canvas.width, canvas.height); // Draw video frame
-        context.restore(); // Restore the canvas state
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.save();
+        context.scale(-1, 1);
+        context.translate(-canvas.width, 0);
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        context.restore();
 
-        // Detect all faces with landmarks and expressions
         const detections = await window.faceapi.detectAllFaces(
-          video, // Detect on the video element
+          video,
           new window.faceapi.TinyFaceDetectorOptions()
         ).withFaceLandmarks().withFaceExpressions();
 
-        // Resize detected results to fit the display size of the canvas.
         const resizedDetections = window.faceapi.resizeResults(detections, displaySize);
 
-        // Draw the detected face bounding boxes on top of the video frame
         window.faceapi.draw.drawDetections(canvas, resizedDetections);
-        // Draw the facial landmark points on top of the video frame
         window.faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
-        // Draw face expressions on top of the video frame
         window.faceapi.draw.drawFaceExpressions(canvas, resizedDetections);
       } else {
-        // If video is paused or ended, stop the detection interval.
         clearInterval(detectionInterval);
       }
-    }, 100); // Run detection and drawing every 100 milliseconds
+    }, 100);
 
-    // Store the interval ID on the video ref for cleanup.
     videoRef.current.detectionIntervalId = detectionInterval;
-  }, [modelsLoaded]); // Dependency array: modelsLoaded to re-run if models state changes.
+  }, [modelsLoaded]);
 
-  // Effect hook to attach/detach the 'play' event listener to the video element.
+  // Effect hook to attach/detach video play event listener
   useEffect(() => {
     const video = videoRef.current;
     if (video && modelsLoaded) {
@@ -181,11 +166,10 @@ const App = () => {
         }
       }
     };
-  }, [modelsLoaded, handleVideoPlay]); // Dependencies: modelsLoaded and handleVideoPlay.
+  }, [modelsLoaded, handleVideoPlay]);
 
   // Function to start video recording.
   const startRecording = () => {
-    // Check if camera is ready and models are loaded before starting recording.
     if (!videoRef.current || !canvasRef.current || !isCameraReady) {
       setError('Camera not ready or models not loaded. Please ensure camera access and models are loaded.');
       return;
@@ -195,7 +179,6 @@ const App = () => {
     const canvasStream = canvasRef.current.captureStream();
 
     let supportedMimeType = '';
-    // Prioritize webm with vp9, then vp8, then generic webm, then mp4 as a last resort.
     const possibleMimeTypes = [
       'video/webm; codecs=vp9,opus',
       'video/webm; codecs=vp8,opus',
@@ -219,10 +202,9 @@ const App = () => {
       return;
     }
 
-    const options = { mimeType: supportedMimeType, timeslice: 2000 }; // Increased timeslice to 2 seconds for more reliable chunks
+    const options = { mimeType: supportedMimeType, timeslice: 2000 };
     let recorder;
     try {
-      // Create MediaRecorder with the canvas stream
       recorder = new MediaRecorder(canvasStream, options);
     } catch (e) {
       console.error('Error creating MediaRecorder:', e);
@@ -230,46 +212,40 @@ const App = () => {
       return;
     }
 
-    // Clear previous recorded chunks from the ref before starting new recording
     recordedChunksRef.current = [];
-    setRecordedChunks([]); // Also clear the state for UI consistency
+    setRecordedChunks([]);
 
-    // Event listener for when data (video chunks) becomes available.
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         console.log('Data available! Chunk size:', event.data.size);
-        recordedChunksRef.current.push(event.data); // Push data to the ref
+        recordedChunksRef.current.push(event.data);
       } else {
         console.warn('Empty data chunk received from MediaRecorder.');
       }
     };
 
-    // Event listener for when recording starts
     recorder.onstart = () => {
       console.log('MediaRecorder started. State:', recorder.state);
-      setError(''); // Clear any previous recording errors
+      setError('');
     };
 
-    // Event listener for when recording stops.
     recorder.onstop = () => {
       console.log('MediaRecorder stopped. State:', recorder.state);
-      console.log('Recorded chunks length on stop (from ref):', recordedChunksRef.current.length); // Log chunk count from ref
+      console.log('Recorded chunks length on stop (from ref):', recordedChunksRef.current.length);
 
-      // Process recorded chunks from the ref
       if (recordedChunksRef.current.length > 0) {
         const blob = new Blob(recordedChunksRef.current, { type: supportedMimeType.split(';')[0] });
         const url = URL.createObjectURL(blob);
-        setVideoUrl(url); // Update state to display video
+        setVideoUrl(url);
         console.log('Recording stopped. Video URL:', url);
       } else {
         setError('Recording stopped, but no video data was captured. This might be due to codec issues or camera not providing data.');
         setVideoUrl('');
       }
-      recordedChunksRef.current = []; // Clear ref for next recording
-      setRecordedChunks([]); // Clear state for UI consistency
+      recordedChunksRef.current = [];
+      setRecordedChunks([]);
     };
 
-    // Add a small delay before starting the recorder to ensure streams are fully active
     setTimeout(() => {
       if (recorder.state === 'inactive') {
         recorder.start();
@@ -285,8 +261,8 @@ const App = () => {
   // Function to stop video recording.
   const stopRecording = () => {
     if (mediaRecorder && recording) {
-      mediaRecorder.stop(); // Stop the MediaRecorder.
-      setRecording(false); // Update recording status to false.
+      mediaRecorder.stop();
+      setRecording(false);
       console.log('Stopping recording...');
     }
   };
@@ -294,14 +270,13 @@ const App = () => {
   // Function to download the recorded video.
   const downloadVideo = () => {
     if (videoUrl) {
-      const a = document.createElement('a'); // Create a temporary anchor element.
-      a.href = videoUrl; // Set the download link to the video URL.
-      a.download = `face-tracking-video-${Date.now()}.webm`; // Set the default filename for download.
-      document.body.appendChild(a); // Append the anchor to the body (necessary for some browsers).
-      a.click(); // Programmatically click the link to trigger the download.
-      document.body.removeChild(a); // Remove the temporary anchor element.
-      URL.revokeObjectURL(videoUrl); // Release the object URL to free up memory.
-      setVideoUrl(''); // Clear the video URL after download.
+      const a = document.createElement('a');
+      a.href = videoUrl;
+      a.download = `face-tracking-video-${Date.now()}.webm`;
+      document.body.appendChild(a);
+      document.body.removeChild(a);
+      URL.revokeObjectURL(videoUrl);
+      setVideoUrl('');
       console.log('Video downloaded.');
     }
   };
@@ -309,14 +284,6 @@ const App = () => {
   return (
     // Main container div with Tailwind CSS classes for styling and responsiveness.
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4 font-inter">
-      {/* Tailwind CSS CDN for utility-first styling. */}
-      <script src="https://cdn.tailwindcss.com"></script>
-      {/* Google Fonts link for the 'Inter' typeface. */}
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
-      {/* Face-API.js CDN for face tracking functionality. */}
-      <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
-
-
       {/* Application Title */}
       <h1 className="text-4xl font-bold mb-8 text-center text-blue-400">
         Face Tracking & Recording

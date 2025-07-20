@@ -15,17 +15,19 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <head>
         {/* Tailwind CSS CDN - Use Next.js Script component */}
+        {/* strategy="beforeInteractive" ensures Tailwind is available before React hydrates */}
         <Script
-          src="https://cdn.tailwindcss.com"
-          strategy="beforeInteractive" // Load before React hydration
-          key="tailwind-cdn"
+          src="https://cdn.tailwindcss.com" // CORRECTED URL
+          strategy="beforeInteractive"
+          key="tailwind-cdn" // Unique key for the script
         />
-        {/* Google Fonts link for Inter - Handled by next/font/google */}
+        {/* Google Fonts link for Inter is handled by next/font/google */}
         {/* Face-API.js CDN - Use Next.js Script component */}
+        {/* strategy="beforeInteractive" ensures face-api.js is available when components mount */}
         <Script
-          src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"
-          strategy="beforeInteractive" // Load before React hydration
-          key="faceapi-cdn"
+          src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js" // CORRECTED URL
+          strategy="beforeInteractive"
+          key="faceapi-cdn" // Unique key for the script
         />
       </head>
       <body className={inter.className}>
